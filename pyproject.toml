@@ -7,6 +7,7 @@ name = "blinksync"
 version = "0.1.0"
 description = "On-demand Blink camera live view as RTSP/WebRTC (via go2rtc) for Home Assistant"
 readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = [
     # Livestream support needs the local patches in blinksync/livestream.py;

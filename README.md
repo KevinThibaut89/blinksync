@@ -144,3 +144,7 @@ BLINKSYNC_DATA=./data .venv/bin/blinksync web
 `blinksync/livestream.py` patches two bugs in blinkpy 0.25.9's livestream
 (short reads and the missing liveview token). Re-check those patches before
 bumping the blinkpy pin.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
