@@ -1,0 +1,18 @@
+[Unit]
+Description=go2rtc (Blink live view streams)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=blinksync
+Group=blinksync
+# Inherited by the `blinksync stream` processes go2rtc launches.
+Environment=BLINKSYNC_DATA=/etc/blinksync
+WorkingDirectory=/var/lib/blinksync
+ExecStart=/usr/local/bin/go2rtc -config /etc/blinksync/go2rtc.yaml
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

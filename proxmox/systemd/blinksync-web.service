@@ -1,0 +1,17 @@
+[Unit]
+Description=blinkSync web UI
+After=network-online.target go2rtc.service
+Wants=network-online.target
+
+[Service]
+User=blinksync
+Group=blinksync
+Environment=BLINKSYNC_DATA=/etc/blinksync
+WorkingDirectory=/var/lib/blinksync
+ExecStart=/opt/blinksync/venv/bin/blinksync web
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

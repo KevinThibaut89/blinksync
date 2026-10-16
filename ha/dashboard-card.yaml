@@ -1,0 +1,22 @@
+# Home Assistant dashboard cards for blinkSync cameras.
+# Shows Blink's latest thumbnail (doesn't wake the camera); tapping opens the
+# camera dialog, which starts the live view. Closing it stops the stream.
+#
+# Don't use `camera_view: live`: it streams the whole time the dashboard is open.
+
+type: grid
+columns: 2
+square: false
+cards:
+  - type: picture-entity
+    entity: camera.front_door   # the Generic Camera entity for this camera
+    camera_view: auto
+    show_state: false
+    tap_action:
+      action: more-info
+  - type: picture-entity
+    entity: camera.backyard
+    camera_view: auto
+    show_state: false
+    tap_action:
+      action: more-info

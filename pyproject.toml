@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blinksync"
+version = "0.1.0"
+description = "On-demand Blink camera live view as RTSP/WebRTC (via go2rtc) for Home Assistant"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Livestream support needs the local patches in blinksync/livestream.py;
+    # re-check them before bumping this pin.
+    "blinkpy==0.25.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+blinksync = "blinksync.cli:main"
+
+[tool.setuptools]
+packages = ["blinksync"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
