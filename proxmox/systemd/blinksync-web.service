@@ -7,6 +7,7 @@ Wants=network-online.target
 User=blinksync
 Group=blinksync
 Environment=BLINKSYNC_DATA=/etc/blinksync
+Environment=BLINKSYNC_CLIPS=/var/lib/blinksync/clips
 WorkingDirectory=/var/lib/blinksync
 ExecStart=/opt/blinksync/venv/bin/blinksync web
 Restart=always

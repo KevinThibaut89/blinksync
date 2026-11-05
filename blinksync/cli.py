@@ -5,6 +5,7 @@
     blinksync stream ACCT ID    write a camera's live view to stdout (go2rtc exec:)
     blinksync login [ACCT]      add a Blink account from the terminal instead of the web UI
     blinksync cameras           list cameras and their stream names
+    blinksync events            list recent motion events and their saved clips
     blinksync apply             regenerate go2rtc.yaml and restart go2rtc
     blinksync password          show the web UI password
 """
@@ -20,7 +21,7 @@ import sys
 
 from . import go2rtc
 from .accounts import AccountError, AccountStore, PendingLogin, slugify, valid_account_name
-from .settings import init_settings, load_settings
+from .settings import clips_dir, init_settings, load_settings
 
 
 def _setup_logging(verbose: bool) -> None:
@@ -94,6 +95,22 @@ def cmd_cameras(args) -> int:
     return 0
 
 
+def cmd_events(args) -> int:
+    from .events import EventLog
+
+    settings = load_settings()
+    root = clips_dir(settings)
+    if settings.poll_seconds <= 0:
+        print("Motion events are off (poll_seconds is 0 in settings.json).")
+    events = EventLog(root).recent(limit=args.limit)
+    if not events:
+        print("No motion events yet.")
+    for e in events:
+        clip = str(root / e.clip) if e.clip else "(clip not downloaded)"
+        print(f"{e.time}  {e.camera:24} {e.source:6} {clip}")
+    return 0
+
+
 def cmd_apply(args) -> int:
     ok = asyncio.run(go2rtc.apply(AccountStore(), load_settings()))
     print(f"Wrote {go2rtc.config_path()}" + ("" if ok else " (go2rtc not restarted)"))
@@ -129,6 +146,9 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=cmd_login)
 
     sub.add_parser("cameras").set_defaults(func=cmd_cameras)
+    p = sub.add_parser("events")
+    p.add_argument("--limit", type=int, default=20)
+    p.set_defaults(func=cmd_events)
     sub.add_parser("apply").set_defaults(func=cmd_apply)
     sub.add_parser("password").set_defaults(func=cmd_password)
 

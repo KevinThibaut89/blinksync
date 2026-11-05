@@ -10,6 +10,7 @@ SRC_DIR="${APP_DIR}/src"
 VENV="${APP_DIR}/venv"
 DATA_DIR="/etc/blinksync"
 HOME_DIR="/var/lib/blinksync"
+CLIPS_DIR="${HOME_DIR}/clips"
 SVC_USER="blinksync"
 
 say() { echo -e " \e[32m✓\e[0m $*"; }
@@ -21,6 +22,8 @@ step "Installing system packages"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq python3 python3-venv curl ca-certificates >/dev/null
+# ffmpeg only pulls a thumbnail out of each motion recording.
+apt-get install -y -qq --no-install-recommends ffmpeg >/dev/null
 say "System packages installed"
 
 if ! id "${SVC_USER}" &>/dev/null; then
@@ -50,9 +53,9 @@ say "go2rtc ${GO2RTC_VERSION} installed"
 # from `blinksync login`) stay readable by the services.
 cat >/usr/local/bin/blinksync <<EOF
 #!/bin/sh
-export BLINKSYNC_DATA="${DATA_DIR}"
+export BLINKSYNC_DATA="${DATA_DIR}" BLINKSYNC_CLIPS="${CLIPS_DIR}"
 if [ "\$(id -u)" = 0 ]; then
-  exec runuser -u ${SVC_USER} -- env BLINKSYNC_DATA="${DATA_DIR}" "${VENV}/bin/blinksync" "\$@"
+  exec runuser -u ${SVC_USER} -- env BLINKSYNC_DATA="${DATA_DIR}" BLINKSYNC_CLIPS="${CLIPS_DIR}" "${VENV}/bin/blinksync" "\$@"
 fi
 exec "${VENV}/bin/blinksync" "\$@"
 EOF

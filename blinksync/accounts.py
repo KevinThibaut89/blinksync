@@ -13,6 +13,7 @@ import contextvars
 import fcntl
 import json
 import re
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -139,6 +140,28 @@ class AccountStore:
                 fcntl.flock(fh, fcntl.LOCK_UN)
 
 
+async def start_blink(store: AccountStore, name: str, session: ClientSession) -> Blink:
+    """Log in with the saved token and return a ready `Blink` on `session`."""
+    if not store.exists(name):
+        raise AccountError(f"No Blink account named '{name}'. Add it in the web UI.")
+    async with store.locked(name):
+        data = json.loads(store.creds_path(name).read_text())
+        blink = Blink(session=session)
+        blink.auth = Auth(data, no_prompt=True, session=session)
+        try:
+            ok = await blink.start()
+        except BlinkTwoFARequiredError as err:
+            raise ReauthRequired(
+                f"Blink wants a new 2FA login for account '{name}'."
+            ) from err
+        except NETWORK_ERRORS as err:
+            raise unreachable(err) from err
+        if not ok:
+            raise AccountError(f"Blink login failed for account '{name}'.")
+        store.save(name, blink)
+    return blink
+
+
 @asynccontextmanager
 async def open_blink(store: AccountStore, name: str, thumbnails: bool = True):
     """Log in with the saved token and yield a ready `Blink` instance.
@@ -146,26 +169,48 @@ async def open_blink(store: AccountStore, name: str, thumbnails: bool = True):
     With `thumbnails`, each camera's `image_from_cache()` holds its latest
     thumbnail afterwards.
     """
-    if not store.exists(name):
-        raise AccountError(f"No Blink account named '{name}'. Add it in the web UI.")
     _fetch_thumbnails.set(thumbnails)
     async with ClientSession() as session:
-        async with store.locked(name):
-            data = json.loads(store.creds_path(name).read_text())
-            blink = Blink(session=session)
-            blink.auth = Auth(data, no_prompt=True, session=session)
-            try:
-                ok = await blink.start()
-            except BlinkTwoFARequiredError as err:
-                raise ReauthRequired(
-                    f"Blink wants a new 2FA login for account '{name}'."
-                ) from err
-            except NETWORK_ERRORS as err:
-                raise unreachable(err) from err
-            if not ok:
-                raise AccountError(f"Blink login failed for account '{name}'.")
-            store.save(name, blink)
-        yield blink
+        yield await start_blink(store, name, session)
+
+
+_TOKEN_FIELDS = ("token", "expires_in", "expiration_date", "refresh_token")
+
+
+async def sync_tokens(
+    store: AccountStore, name: str, blink: Blink, min_valid: float = 600
+) -> None:
+    """Bring a long-lived `Blink` up to date with the saved token.
+
+    Other processes (stream starts, snapshot refreshes) rotate the token in
+    the account file all the time, which retires the one this instance holds.
+    Adopt the newest one, and refresh it here, under the lock, when it has
+    less than `min_valid` seconds left. blinkpy would otherwise refresh it in
+    the middle of a request, without the lock and through its older login
+    endpoint.
+    """
+    auth = blink.auth
+    async with store.locked(name):
+        try:
+            saved = json.loads(store.creds_path(name).read_text())
+        except FileNotFoundError as err:
+            raise AccountError(f"Account '{name}' was removed.") from err
+        if saved.get("refresh_token") and saved["refresh_token"] != auth.refresh_token:
+            for field in _TOKEN_FIELDS:
+                setattr(auth, field, saved.get(field))
+        if (auth.expiration_date or 0) - time.time() > min_valid:
+            return
+        try:
+            await auth.startup()
+        except BlinkTwoFARequiredError as err:
+            raise ReauthRequired(
+                f"Blink wants a new 2FA login for account '{name}'."
+            ) from err
+        except NETWORK_ERRORS as err:
+            raise unreachable(err) from err
+        except Exception as err:  # LoginError and friends
+            raise AccountError(f"Blink token refresh failed for '{name}': {err}") from err
+        write_private(store.creds_path(name), json.dumps(auth.login_attributes, indent=2))
 
 
 class PendingLogin:

@@ -1,0 +1,68 @@
+# blinkSync → Home Assistant: a recording is saved (or failed).
+#
+# Optional. Blink's own notification already told you about the motion; this
+# one follows ~40 s later with a picture from the recording and a link to the
+# clip. It also feeds the motion sensor at the bottom.
+#
+# 1. Settings → Automations & scenes → Create automation → ⋮ → Edit in YAML,
+#    paste this and save. Change webhook_id to something long and random.
+# 2. In the blinkSync container, add to /etc/blinksync/settings.json:
+#      "ha_webhook_url": "http://<home-assistant-ip>:8123/api/webhook/<webhook_id>"
+#    then run: systemctl restart blinksync-web
+# 3. blinkSync web UI → Send test event.
+#
+# trigger.json contains: camera, stream, account, camera_id, time (UTC, ISO
+# 8601), source ("notification", "local"/"cloud" for polled Blink clips, or
+# "test"), clip_url, thumbnail_url, snapshot_url. clip_url is null when the
+# recording failed (camera asleep, offline, or busy in the Blink app). The
+# URLs point at blinkSync on your LAN, so they only open at home or over a VPN.
+#
+# The notification image goes through Home Assistant instead, so it also
+# works away from home: blinkSync makes the recording's thumbnail the camera's
+# snapshot before calling the webhook. This assumes the Generic Camera entity
+# is named camera.<stream> (e.g. camera.front_door, the stream name shown in
+# the web UI). Rename the entity or adjust the camera.… lines if not.
+
+alias: blinkSync recording saved
+mode: queued
+triggers:
+  - trigger: webhook
+    webhook_id: blinksync-motion-CHANGE-ME
+    allowed_methods: [POST]
+    local_only: true
+actions:
+  # Lets other automations and the motion sensor below react too.
+  - event: blinksync_motion
+    event_data:
+      camera: "{{ trigger.json.camera }}"
+      stream: "{{ trigger.json.stream }}"
+      time: "{{ trigger.json.time }}"
+      source: "{{ trigger.json.source }}"
+      clip_url: "{{ trigger.json.clip_url }}"
+  - action: notify.mobile_app_your_iphone  # your phone's notify action
+    data:
+      title: >-
+        {{ trigger.json.camera }}: {{ 'recorded' if trigger.json.clip_url else 'recording failed' }}
+      message: >-
+        {{ as_timestamp(trigger.json.time) | timestamp_custom('%H:%M:%S') }}
+      data:
+        entity_id: "camera.{{ trigger.json.stream }}"  # iOS: shows the picture
+        image: "/api/camera_proxy/camera.{{ trigger.json.stream }}"  # Android
+        url: "{{ trigger.json.clip_url or trigger.json.snapshot_url }}"  # tap (LAN/VPN)
+        clickAction: "{{ trigger.json.clip_url or trigger.json.snapshot_url }}"
+
+# Optional: a motion binary_sensor per camera, for dashboards and other
+# automations. Goes in configuration.yaml (not in the automation above);
+# copy the block for each camera and set its stream name.
+#
+# template:
+#   - triggers:
+#       - trigger: event
+#         event_type: blinksync_motion
+#         event_data:
+#           stream: front_door
+#     binary_sensor:
+#       - name: Front door motion
+#         device_class: motion
+#         state: "on"
+#         auto_off: "00:01:00"

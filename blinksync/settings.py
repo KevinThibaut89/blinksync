@@ -7,6 +7,9 @@ Everything lives under one data directory (``BLINKSYNC_DATA``, default
     go2rtc.yaml          generated; never edit by hand
     accounts/<name>.json Blink credentials (refresh token), mode 0600
     accounts/<name>.cameras.json  camera list cached at login/refresh
+
+Motion clips are not kept there: they go to `clips_dir` (the systemd unit sets
+$BLINKSYNC_CLIPS to /var/lib/blinksync/clips).
 """
 
 from __future__ import annotations
@@ -24,6 +27,12 @@ DEFAULT_DATA_DIR = "/etc/blinksync"
 
 def data_dir() -> Path:
     return Path(os.environ.get("BLINKSYNC_DATA", DEFAULT_DATA_DIR))
+
+
+def clips_dir(settings: "Settings") -> Path:
+    """Where motion clips are saved: settings, then $BLINKSYNC_CLIPS, then <data>/clips."""
+    configured = settings.clips_dir or os.environ.get("BLINKSYNC_CLIPS", "")
+    return Path(configured) if configured else data_dir() / "clips"
 
 
 def blinksync_bin() -> str:
@@ -50,6 +59,27 @@ class Settings:
     # Upper bound for one viewing session. Battery cameras drain fast while
     # live view is on, so a forgotten dashboard tab must not stream forever.
     max_minutes: int = 10
+    # Recordings started by POST /api/motion (e.g. from an iPhone Shortcut on
+    # a Blink notification): length, and how long after one ends a new one
+    # for the same camera is ignored (repeat notifications, several phones).
+    record_seconds: int = 30
+    record_cooldown: int = 60
+    # Check Blink for clips it saved itself this often (seconds); 0 = off.
+    # Only useful with a Sync Module 2 USB stick or a Blink plan; each check
+    # asks the Sync Module for its clip list.
+    poll_seconds: int = 0
+    # Saved clips are deleted after `keep_days`, oldest first once the folder
+    # is larger than `max_clips_gb`. Empty clips_dir: $BLINKSYNC_CLIPS or
+    # <data dir>/clips.
+    clips_dir: str = ""
+    keep_days: int = 14
+    max_clips_gb: float = 2.0
+    # Home Assistant webhook that gets a JSON POST for every motion clip,
+    # e.g. http://homeassistant.local:8123/api/webhook/blinksync-motion-xyz
+    ha_webhook_url: str = ""
+    # How Home Assistant reaches this web UI, for the clip links in webhook
+    # payloads. Empty: http://<this machine's LAN IP>:<web_port>.
+    public_url: str = ""
 
     @property
     def go2rtc_api(self) -> str:

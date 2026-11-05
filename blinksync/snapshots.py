@@ -67,6 +67,10 @@ class SnapshotCache:
         if self.on_refresh:
             await self.on_refresh(account)
 
+    def put(self, account: str, camera_id: str, image: bytes) -> None:
+        """Store a newer thumbnail, e.g. one fetched for a motion event."""
+        self._images[(account, str(camera_id))] = image
+
     def forget(self, account: str) -> None:
         self._fetched.pop(account, None)
         for key in [k for k in self._images if k[0] == account]:

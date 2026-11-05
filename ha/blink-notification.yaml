@@ -1,0 +1,61 @@
+# Blink notification on your iPhone → blinkSync records that camera.
+#
+#   iPhone Shortcut (on Blink notification) ──webhook──► Home Assistant
+#   Home Assistant ──rest_command──► blinkSync POST /api/motion ──► recording
+#
+# The phone talks to Home Assistant, not to blinkSync directly, so this also
+# works away from home (as long as the HA app works there: Nabu Casa or your
+# own external URL).
+#
+# ---------------------------------------------------------------------------
+# 1. configuration.yaml: how HA reaches blinkSync. The key is the one in the
+#    camera Snapshot URLs (snapshot_key in /etc/blinksync/settings.json).
+#    Restart Home Assistant after adding it.
+#
+# rest_command:
+#   blinksync_motion:
+#     url: "http://<blinksync-ip>:8080/api/motion?key=<snapshot_key>"
+#     method: POST
+#     content_type: application/json
+#     payload: '{{ {"text": text | default(""), "camera": camera | default("")} | to_json }}'
+#
+# ---------------------------------------------------------------------------
+# 2. The automation below: Settings → Automations & scenes → Create
+#    automation → ⋮ → Edit in YAML. Change webhook_id to something long and
+#    random; anyone who knows it can start a recording.
+#
+# ---------------------------------------------------------------------------
+# 3. iPhone: Shortcuts → Automation → + → Notification
+#    - App: Blink. Add Filter so only motion/doorbell notifications count
+#      (Blink also notifies about low batteries and offline cameras, which
+#      name the camera too and would start a pointless recording).
+#    - Run Immediately (no confirmation).
+#    - Action "Get Contents of URL":
+#        URL:     https://<your HA address>/api/webhook/<webhook_id>
+#        Method:  POST
+#        Request Body: JSON, one Text field named  text  set to the
+#                 Shortcut Input (the notification; pick its title and body
+#                 if Shortcuts offers them separately).
+#    blinkSync looks for a camera name in that text. If your notifications
+#    don't contain it, make one automation per camera (filter on something
+#    unique to it) and send a field  camera  with the stream name instead,
+#    e.g. front_door.
+#
+# Test without walking past a camera: blinkSync web UI → Record 30 s, or
+#   curl -X POST 'http://<blinksync-ip>:8080/api/motion?key=<key>' \
+#        -H 'Content-Type: application/json' -d '{"text": "Motion at Front Door"}'
+# A camera that couldn't be matched is logged by blinksync-web with the
+# text it received (journalctl -u blinksync-web -f).
+
+alias: Blink notification → blinkSync recording
+mode: parallel
+triggers:
+  - trigger: webhook
+    webhook_id: blink-notification-CHANGE-ME
+    allowed_methods: [POST]
+    local_only: false  # the phone may be away from home
+actions:
+  - action: rest_command.blinksync_motion
+    data:
+      text: "{{ trigger.json.text | default('') }}"
+      camera: "{{ trigger.json.camera | default('') }}"

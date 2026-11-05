@@ -19,7 +19,8 @@ def store(data):
 
 @pytest.fixture
 def settings():
-    return Settings(web_password="pw", snapshot_key="k3y")
+    # poll_seconds=0: no background Blink checks in web tests.
+    return Settings(web_password="pw", snapshot_key="k3y", poll_seconds=0)
 
 
 def add_account(store: AccountStore, name: str, cameras: list[dict], username="me@x.com"):
