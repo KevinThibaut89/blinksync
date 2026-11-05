@@ -187,6 +187,54 @@ class EventLog:
         return events[:limit]
 
 
+@dataclass
+class SavedClip:
+    """A clip file in the clips folder (whichever way it got there)."""
+
+    rel: str  # e.g. garden/2026-11-05/132338_notification1793885018.mp4
+    stream: str
+    day: str
+    mtime: float  # the clip's start time
+    size: int
+    thumbnail: str  # rel path of the .jpg next to it, or ""
+
+
+def saved_clips(root: Path) -> list[SavedClip]:
+    """Every clip on disk, newest first. Layout: <stream>/<day>/<name>.mp4."""
+    clips = []
+    if not root.is_dir():
+        return clips
+    for path in root.glob("*/*/*.mp4"):
+        if path.name.startswith("."):
+            continue  # a download or remux in progress
+        st = path.stat()
+        rel = path.relative_to(root)
+        thumb = path.with_suffix(".jpg")
+        clips.append(SavedClip(
+            rel.as_posix(), rel.parts[0], rel.parts[1], st.st_mtime, st.st_size,
+            thumb.relative_to(root).as_posix() if thumb.exists() else "",
+        ))
+    clips.sort(key=lambda c: c.mtime, reverse=True)
+    return clips
+
+
+def delete_clip(root: Path, rel: str) -> bool:
+    """Delete a clip and its thumbnail. False if `rel` isn't a clip in `root`."""
+    root = root.resolve()
+    path = (root / rel).resolve()
+    if not path.is_relative_to(root) or path.suffix != ".mp4" or not path.is_file():
+        return False
+    path.unlink()
+    path.with_suffix(".jpg").unlink(missing_ok=True)
+    for folder in (path.parent, path.parent.parent):
+        if folder != root:
+            try:
+                folder.rmdir()  # only succeeds when empty
+            except OSError:
+                break
+    return True
+
+
 def prune(root: Path, keep_days: float, max_bytes: float) -> int:
     """Delete clips older than `keep_days`, then the oldest until under `max_bytes`."""
     if not root.exists():

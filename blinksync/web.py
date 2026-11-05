@@ -11,13 +11,15 @@ optionally polls Blink for clips (events.py), and serves both under /clips/.
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import logging
 import secrets
 import time
 from base64 import b64decode
 from html import escape
-from urllib.parse import quote, urlsplit
+from itertools import groupby
+from urllib.parse import quote, urlencode, urlsplit
 
 from aiohttp import ClientError, ClientSession, ClientTimeout, web
 
@@ -31,7 +33,15 @@ from .accounts import (
     slugify,
     valid_account_name,
 )
-from .events import EventWatcher, MotionEvent, iso, send_webhook, webhook_payload
+from .events import (
+    EventWatcher,
+    MotionEvent,
+    delete_clip,
+    iso,
+    saved_clips,
+    send_webhook,
+    webhook_payload,
+)
 from .recorder import Recorder, match_camera
 from .settings import Settings, load_settings
 from .snapshots import SnapshotCache
@@ -39,6 +49,7 @@ from .snapshots import SnapshotCache
 _LOGGER = logging.getLogger(__name__)
 
 PENDING_TTL = 600  # seconds a half-finished 2FA login is kept
+RECORDINGS_PAGE = 48  # clips per page on /recordings
 
 STORE = web.AppKey("store", AccountStore)
 SETTINGS = web.AppKey("settings", Settings)
@@ -167,6 +178,19 @@ li { margin-bottom: 6px; }
 .event { display: flex; gap: 10px; align-items: center; padding: 4px 0; font-size: 14px; }
 .event img { width: 64px; height: 36px; object-fit: cover; border-radius: 4px;
   background: var(--code-bg); flex: none; }
+nav { display: flex; gap: 14px; align-items: center; font-size: 14px; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.chips a { text-decoration: none; }
+.chips a.on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.day { margin: 22px 0 8px; font-size: 14px; color: var(--muted); font-weight: 600; }
+.clips { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 12px; }
+.clip { border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+  background: var(--card); }
+.clip img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; display: block;
+  background: var(--code-bg); }
+.clip .meta { padding: 8px 10px; display: flex; gap: 8px; align-items: center;
+  justify-content: space-between; font-size: 13px; }
+.pager { display: flex; justify-content: space-between; margin-top: 20px; }
 """
 
 COPY_JS = """
@@ -196,7 +220,8 @@ def page(title: str, body: str, request: web.Request | None = None) -> web.Respo
 <title>{escape(title)}</title><style>{CSS}</style></head>
 <body><main>
 <header><h1><a href="/">blinkSync</a></h1>
-<span class="muted small">v{__version__}</span></header>
+<nav><a href="/">Cameras</a><a href="/recordings">Recordings</a>
+<span class="muted small">v{__version__}</span></nav></header>
 {flash}{body}
 </main><script>{COPY_JS}</script></body></html>"""
     return web.Response(text=html, content_type="text/html")
@@ -204,7 +229,8 @@ def page(title: str, body: str, request: web.Request | None = None) -> web.Respo
 
 def redirect(path: str = "/", msg: str = "", err: str = "") -> web.HTTPFound:
     query = "&".join(f"{k}={quote(v)}" for k, v in (("msg", msg), ("err", err)) if v)
-    return web.HTTPFound(f"{path}?{query}" if query else path)
+    sep = "&" if "?" in path else "?"
+    return web.HTTPFound(f"{path}{sep}{query}" if query else path)
 
 
 def copy_row(label: str, value: str) -> str:
@@ -293,7 +319,8 @@ def events_html(watcher: EventWatcher, account: str) -> str:
     )
     return f"""
 <div class="events"><div class="row" style="justify-content:space-between">
-  <h3>Motion events</h3>{state}</div>{listing}</div>"""
+  <h3>Motion events</h3>{state}</div>{listing}
+  <p class="small"><a href="/recordings">All recordings</a></p></div>"""
 
 
 def motion_help_html(settings: Settings, watcher: EventWatcher) -> str:
@@ -653,6 +680,92 @@ async def record_now(request: web.Request) -> web.Response:
     raise redirect(err=f"{entry.camera['name']} is {'already recording' if status == 'busy' else 'cooling down; try again in a minute'}.")
 
 
+def _recordings_url(camera: str = "", page_no: int = 1) -> str:
+    query = {k: v for k, v in (("camera", camera), ("page", page_no)) if v and v != 1}
+    return "/recordings" + (f"?{urlencode(query)}" if query else "")
+
+
+async def recordings(request: web.Request) -> web.Response:
+    """Every saved clip, newest first, grouped by day, filterable by camera."""
+    watcher = request.app[WATCHER]
+    names = {e.name: e.camera["name"] for e in go2rtc.stream_entries(request.app[STORE])}
+    clips = await asyncio.to_thread(saved_clips, watcher.root)
+
+    counts: dict[str, int] = {}
+    for clip in clips:
+        counts[clip.stream] = counts.get(clip.stream, 0) + 1
+    camera = request.query.get("camera", "")
+    if camera:
+        clips = [c for c in clips if c.stream == camera]
+    try:
+        page_no = max(1, int(request.query.get("page", "1")))
+    except ValueError:
+        page_no = 1
+    pages = max(1, -(-len(clips) // RECORDINGS_PAGE))
+    page_no = min(page_no, pages)
+    shown = clips[(page_no - 1) * RECORDINGS_PAGE : page_no * RECORDINGS_PAGE]
+
+    def chip(label: str, stream: str, count: int) -> str:
+        on = " on" if stream == camera else ""
+        return (f'<a class="btn small{on}" href="{escape(_recordings_url(stream))}">'
+                f"{escape(label)} <span class=\"muted\">{count}</span></a>")
+
+    chips = chip("All", "", sum(counts.values())) + "".join(
+        chip(names.get(s, s), s, n) for s, n in sorted(counts.items())
+    )
+
+    sections = []
+    for day, items in groupby(shown, key=lambda c: c.day):
+        cards = []
+        for clip in items:
+            href = f"/clips/{quote(clip.rel)}"
+            thumb = (f'<img src="/clips/{quote(clip.thumbnail)}" alt="" loading="lazy">'
+                     if clip.thumbnail else '<img alt="">')
+            cards.append(f"""
+<div class="clip"><a href="{href}" target="_blank" rel="noopener">{thumb}</a>
+  <div class="meta"><div><strong>{escape(names.get(clip.stream, clip.stream))}</strong><br>
+    <time class="muted" datetime="{iso(clip.mtime)}">{iso(clip.mtime)}</time>
+    <span class="muted">· {clip.size / 1e6:.1f} MB</span></div>
+  <form class="inline" method="post" action="/recordings/delete"
+    onsubmit="return confirm('Delete this recording?')">
+    <input type="hidden" name="path" value="{escape(clip.rel)}">
+    <input type="hidden" name="back" value="{escape(_recordings_url(camera, page_no))}">
+    <button class="btn small danger" title="Delete">Delete</button></form></div>
+</div>""")
+        sections.append(f'<div class="day">{escape(day)}</div><div class="clips">{"".join(cards)}</div>')
+
+    if not sections:
+        listing = ('<div class="card empty"><p class="muted">No recordings yet. Use '
+                   '<strong>Record</strong> on the Cameras page to make one.</p></div>')
+    else:
+        listing = "".join(sections)
+    pager = ""
+    if pages > 1:
+        newer = (f'<a class="btn" href="{escape(_recordings_url(camera, page_no - 1))}">← Newer</a>'
+                 if page_no > 1 else "<span></span>")
+        older = (f'<a class="btn" href="{escape(_recordings_url(camera, page_no + 1))}">Older →</a>'
+                 if page_no < pages else "<span></span>")
+        pager = f'<div class="pager">{newer}<span class="muted small">page {page_no} of {pages}</span>{older}</div>'
+
+    body = f"""
+<div class="row" style="justify-content:space-between;margin-bottom:12px">
+  <h2>Recordings</h2>
+  <span class="small muted">kept {request.app[SETTINGS].keep_days} days</span></div>
+<div class="chips">{chips}</div>
+{listing}{pager}"""
+    return page("Recordings · blinkSync", body, request)
+
+
+async def recordings_delete(request: web.Request) -> web.Response:
+    form = await request.post()
+    back = str(form.get("back") or "/recordings")
+    if not back.startswith("/recordings"):
+        back = "/recordings"
+    if not await asyncio.to_thread(delete_clip, request.app[WATCHER].root, str(form.get("path", ""))):
+        raise redirect(back, err="That recording no longer exists.")
+    raise redirect(back, msg="Recording deleted.")
+
+
 async def test_event(request: web.Request) -> web.Response:
     settings = request.app[SETTINGS]
     if not settings.ha_webhook_url:
@@ -729,6 +842,8 @@ def create_app(
     app.router.add_post("/events/test", test_event)
     app.router.add_post("/api/motion", api_motion)
     app.router.add_post("/record/{name}", record_now)
+    app.router.add_get("/recordings", recordings)
+    app.router.add_post("/recordings/delete", recordings_delete)
     app.router.add_get("/healthz", healthz)
     app.on_startup.append(_on_startup)
     app.on_cleanup.append(_on_cleanup)

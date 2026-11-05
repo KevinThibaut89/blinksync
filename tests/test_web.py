@@ -269,3 +269,70 @@ def test_record_button(store, settings, monkeypatch):
         assert (await client.post("/record/garden")).status == 401
 
     run(store, settings, scenario)
+
+
+def _clip(root, rel, age_s=0, thumb=True):
+    import os
+    import time as _time
+
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"x" * 2_000_000)
+    t = _time.time() - age_s
+    os.utime(path, (t, t))
+    if thumb:
+        path.with_suffix(".jpg").write_bytes(b"jpg")
+
+
+def test_recordings_page(store, settings, data, monkeypatch):
+    add_account(store, "home", [{"id": "9", "name": "Garden"}, {"id": "7", "name": "Front Door"}])
+    settings.clips_dir = str(data / "clips")
+    root = data / "clips"
+    _clip(root, "garden/2026-11-05/132338_a.mp4", age_s=10)
+    _clip(root, "front_door/2026-11-05/120000_b.mp4", age_s=100, thumb=False)
+    _clip(root, "garden/2026-11-04/080000_c.mp4", age_s=90_000)
+    monkeypatch.setattr(web, "RECORDINGS_PAGE", 2)
+
+    async def scenario(client):
+        assert (await client.get("/recordings")).status == 401
+
+        html = await (await client.get("/recordings", headers=AUTH)).text()
+        assert html.index("132338_a.mp4") < html.index("120000_b.mp4")  # newest first
+        assert "080000_c.mp4" not in html  # on page 2
+        assert "page 1 of 2" in html and 'href="/recordings?page=2"' in html
+        assert "Garden" in html and "Front Door" in html and "2.0 MB" in html
+        assert '<img src="/clips/garden/2026-11-05/132338_a.jpg"' in html
+
+        html = await (await client.get("/recordings?page=2", headers=AUTH)).text()
+        assert "080000_c.mp4" in html and "2026-11-04" in html
+
+        html = await (await client.get("/recordings?camera=front_door", headers=AUTH)).text()
+        assert "120000_b.mp4" in html and "132338_a.mp4" not in html
+        assert "page 1 of" not in html
+
+        html = await (await client.get("/recordings?page=abc", headers=AUTH)).text()
+        assert "132338_a.mp4" in html
+
+        r = await client.post(
+            "/recordings/delete", headers=AUTH, allow_redirects=False,
+            data={"path": "garden/2026-11-05/132338_a.mp4", "back": "/recordings?camera=garden"},
+        )
+        assert r.headers["Location"].startswith("/recordings?camera=garden&msg=")
+        assert not (root / "garden/2026-11-05/132338_a.mp4").exists()
+        assert not (root / "garden/2026-11-05/132338_a.jpg").exists()
+
+        r = await client.post(
+            "/recordings/delete", headers=AUTH, allow_redirects=False,
+            data={"path": "../../accounts/home.json", "back": "https://evil.example/"},
+        )
+        assert r.headers["Location"].startswith("/recordings?err=")
+
+    run(store, settings, scenario)
+
+
+def test_recordings_page_empty(store, settings):
+    async def scenario(client):
+        html = await (await client.get("/recordings", headers=AUTH)).text()
+        assert "No recordings yet" in html
+
+    run(store, settings, scenario)

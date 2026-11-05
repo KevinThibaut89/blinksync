@@ -342,3 +342,33 @@ def test_sync_tokens_refreshes_and_saves_when_expiring(store):
     assert blink.auth.startups == 1
     saved = json.loads(store.creds_path("home").read_text())
     assert saved["refresh_token"] == "new-refresh"
+
+
+# --------------------------------------------------------------------------
+# Saved clips on disk
+# --------------------------------------------------------------------------
+
+
+def test_saved_clips_and_delete(tmp_path):
+    _file(tmp_path / "garden/2026-11-04/080000_x.mp4", 10, age_days=1)
+    _file(tmp_path / "garden/2026-11-04/080000_x.jpg", 5, age_days=1)
+    _file(tmp_path / "front_door/2026-11-05/090000_y.mp4", 20, age_days=0)
+    _file(tmp_path / "front_door/2026-11-05/.090500_z.mp4.tmp", 1, age_days=0)
+    _file(tmp_path / "front_door/2026-11-05/.hidden.mp4", 1, age_days=0)
+    (tmp_path / "outside.mp4").write_bytes(b"x")
+
+    clips = events.saved_clips(tmp_path)
+    assert [c.rel for c in clips] == [
+        "front_door/2026-11-05/090000_y.mp4", "garden/2026-11-04/080000_x.mp4"
+    ]
+    assert clips[1].thumbnail == "garden/2026-11-04/080000_x.jpg"
+    assert clips[0].thumbnail == "" and clips[0].stream == "front_door"
+    assert clips[1].day == "2026-11-04" and clips[1].size == 10
+
+    assert not events.delete_clip(tmp_path, "../outside.mp4")
+    assert not events.delete_clip(tmp_path, "garden/2026-11-04/080000_x.jpg")
+    assert not events.delete_clip(tmp_path, "garden/nope.mp4")
+    assert events.delete_clip(tmp_path, "garden/2026-11-04/080000_x.mp4")
+    assert not (tmp_path / "garden").exists()  # emptied folders go too
+    assert (tmp_path / "outside.mp4").exists()
+    assert events.saved_clips(tmp_path / "missing") == []

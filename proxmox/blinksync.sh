@@ -194,11 +194,12 @@ create_container() {
 summary() {
   local ctid="$1" ip password
   ip="$(pct exec "$ctid" -- hostname -I | awk '{print $1}')"
-  password="$(pct exec "$ctid" -- /usr/local/bin/blinksync password | awk '/password:/ {print $2}')"
+  password="$(pct exec "$ctid" -- /usr/local/bin/blinksync password | awk '/^password:/ {print $2}')"
   echo -e "${GN}${BOLD}${APP} is ready.${CL}\n"
   echo -e "  Web UI      ${BL}http://${ip}:8080${CL}"
   echo -e "  Login       admin / ${BOLD}${password}${CL}"
-  echo -e "  Streams     rtsp://${ip}:8554/<camera>\n"
+  echo -e "  Streams     rtsp://${ip}:8554/<camera>"
+  echo -e "  Recordings  smb://${ip}/recordings (user hass, see blinksync password)\n"
   echo -e "  Next: open the web UI, add your Blink account, then add each camera"
   echo -e "  to Home Assistant with the URLs it shows."
   echo -e "  Forgot the password? ${BL}pct exec ${ctid} -- blinksync password${CL}\n"

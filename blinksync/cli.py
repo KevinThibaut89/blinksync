@@ -116,8 +116,13 @@ def cmd_apply(args) -> int:
 
 
 def cmd_password(args) -> int:
+    from .settings import data_dir
+
     settings = load_settings()
     print(f"user: {settings.web_username}\npassword: {settings.web_password}")
+    smb = data_dir() / "smb-password"
+    if smb.exists():
+        print(f"recordings share (smb) user: hass\nrecordings share (smb) password: {smb.read_text().strip()}")
     return 0
 
 
