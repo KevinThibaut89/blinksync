@@ -100,8 +100,6 @@ def cmd_events(args) -> int:
 
     settings = load_settings()
     root = clips_dir(settings)
-    if settings.poll_seconds <= 0:
-        print("Motion events are off (poll_seconds is 0 in settings.json).")
     events = EventLog(root).recent(limit=args.limit)
     if not events:
         print("No motion events yet.")

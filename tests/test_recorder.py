@@ -147,7 +147,8 @@ def test_record_mp4_saves_go2rtc_stream(tmp_path):
 
     assert run_go2rtc(handler, scenario) == 50_000
     assert (tmp_path / "a/b.mp4").stat().st_size == 50_000
-    assert seen == {"src": "garden", "duration": "15", "auth": basic_auth("admin", "pw")}
+    assert seen == {"src": "garden", "duration": str(15 + recorder.LIVEVIEW_STARTUP),
+                    "auth": basic_auth("admin", "pw")}
 
 
 def test_record_mp4_rejects_errors_and_empty_streams(tmp_path):

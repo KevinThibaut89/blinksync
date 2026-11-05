@@ -30,6 +30,9 @@ from .settings import Settings
 _LOGGER = logging.getLogger(__name__)
 
 MIN_CLIP_BYTES = 4096  # less than this is an error page or an empty file
+# go2rtc's `duration` runs from the request, not from the first frame, and a
+# Blink live view takes ~10 s to start (measured: 30 s asked → 18.4 s video).
+LIVEVIEW_STARTUP = 12
 
 
 def match_camera(
@@ -51,16 +54,19 @@ def match_camera(
 
 
 async def record_mp4(settings: Settings, stream: str, seconds: int, target: Path) -> int:
-    """Save `seconds` of `stream` from go2rtc to `target`. Returns the size."""
+    """Save about `seconds` of video of `stream` from go2rtc to `target`.
+
+    Returns the size in bytes (0 if nothing usable came back).
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(f".{target.name}.tmp")
     size = 0
-    timeout = ClientTimeout(total=seconds + 60, sock_read=30)
+    timeout = ClientTimeout(total=seconds + LIVEVIEW_STARTUP + 60, sock_read=30)
     try:
         async with ClientSession(timeout=timeout) as session:
             async with session.get(
                 f"{settings.go2rtc_api}/api/stream.mp4",
-                params={"src": stream, "duration": str(seconds)},
+                params={"src": stream, "duration": str(seconds + LIVEVIEW_STARTUP)},
                 headers=go2rtc.api_headers(settings),
             ) as response:
                 if response.status != 200:
