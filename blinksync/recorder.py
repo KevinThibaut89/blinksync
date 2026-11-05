@@ -30,9 +30,6 @@ from .settings import Settings
 _LOGGER = logging.getLogger(__name__)
 
 MIN_CLIP_BYTES = 4096  # less than this is an error page or an empty file
-# go2rtc's `duration` runs from the request, not from the first frame, and a
-# Blink live view takes ~10 s to start (measured: 30 s asked → 18.4 s video).
-LIVEVIEW_STARTUP = 12
 
 
 def match_camera(
@@ -54,19 +51,21 @@ def match_camera(
 
 
 async def record_mp4(settings: Settings, stream: str, seconds: int, target: Path) -> int:
-    """Save about `seconds` of video of `stream` from go2rtc to `target`.
+    """Save `seconds` of video of `stream` from go2rtc to `target`.
 
-    Returns the size in bytes (0 if nothing usable came back).
+    go2rtc's `duration` counts video time from the first frame, so live view
+    startup doesn't eat into it. Returns the size in bytes (0 if nothing
+    usable came back).
     """
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(f".{target.name}.tmp")
     size = 0
-    timeout = ClientTimeout(total=seconds + LIVEVIEW_STARTUP + 60, sock_read=30)
+    timeout = ClientTimeout(total=seconds + 60, sock_read=30)
     try:
         async with ClientSession(timeout=timeout) as session:
             async with session.get(
                 f"{settings.go2rtc_api}/api/stream.mp4",
-                params={"src": stream, "duration": str(seconds + LIVEVIEW_STARTUP)},
+                params={"src": stream, "duration": str(seconds)},
                 headers=go2rtc.api_headers(settings),
             ) as response:
                 if response.status != 200:
@@ -85,30 +84,53 @@ async def record_mp4(settings: Settings, stream: str, seconds: int, target: Path
         tmp.unlink(missing_ok=True)
 
 
-async def extract_frame(video: Path, target: Path) -> bytes | None:
-    """A JPEG from early in the clip, via ffmpeg (skipped if it isn't installed)."""
+async def _ffmpeg(*args: str) -> bool:
+    """Run ffmpeg; False if it isn't installed, fails or hangs."""
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
-        _LOGGER.debug("ffmpeg not installed; no thumbnail for %s", video.name)
-        return None
+        _LOGGER.debug("ffmpeg not installed")
+        return False
+    proc = await asyncio.create_subprocess_exec(
+        ffmpeg, "-v", "error", "-y", *args,
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, err = await asyncio.wait_for(proc.communicate(), 60)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        return False
+    if proc.returncode:
+        _LOGGER.debug("ffmpeg %s failed: %s", args, err.decode(errors="replace").strip())
+    return proc.returncode == 0
+
+
+async def finish_clip(video: Path) -> None:
+    """Drop the audio track and put the MP4 index first, in place.
+
+    Blink's audio reaches us declared as 16 kHz AAC but with twice as many
+    samples per second (measured: 42 s of video, 84 s of audio), so players
+    showed every clip at double length with a frozen picture. The index at the
+    front lets phones start playing before the whole file has loaded.
+    """
+    tmp = video.with_name(f".{video.stem}.fixed.mp4")
+    if await _ffmpeg("-i", str(video), "-map", "0:v", "-c", "copy",
+                     "-movflags", "+faststart", str(tmp)) and tmp.exists():
+        os.replace(tmp, video)
+    tmp.unlink(missing_ok=True)
+
+
+async def extract_frame(video: Path, target: Path) -> bytes | None:
+    """A JPEG from early in the clip, via ffmpeg (None if it isn't installed)."""
     tmp = target.with_name(f".{target.stem}.tmp.jpg")
     for offset in ("2", "0"):  # 2 s in skips the first, often grey, frames
-        proc = await asyncio.create_subprocess_exec(
-            ffmpeg, "-v", "error", "-y", "-ss", offset, "-i", str(video),
-            "-frames:v", "1", "-q:v", "3", str(tmp),
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            _, err = await asyncio.wait_for(proc.communicate(), 30)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+        if not await _ffmpeg("-ss", offset, "-i", str(video),
+                             "-frames:v", "1", "-q:v", "3", str(tmp)):
             continue
-        if proc.returncode == 0 and tmp.exists() and tmp.stat().st_size:
+        if tmp.exists() and tmp.stat().st_size:
             data = tmp.read_bytes()
             os.replace(tmp, target)
             return data
-        _LOGGER.debug("ffmpeg at %ss failed: %s", offset, err.decode(errors="replace").strip())
     tmp.unlink(missing_ok=True)
     return None
 
@@ -172,6 +194,7 @@ class Recorder:
 
         image = None
         if size:
+            await finish_clip(root / video)
             event.clip = video
             thumb = clip_rel(event, ".jpg")
             image = await extract_frame(root / video, root / thumb)

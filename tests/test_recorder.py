@@ -52,6 +52,9 @@ def make_recorder(data, monkeypatch, video=b"v" * 10_000, frame=b"\xff\xd8jpg"):
         target.write_bytes(video)
         return len(video)
 
+    async def finish_clip(video_path):
+        pass
+
     async def extract_frame(video_path, target):
         if frame:
             target.write_bytes(frame)
@@ -59,6 +62,7 @@ def make_recorder(data, monkeypatch, video=b"v" * 10_000, frame=b"\xff\xd8jpg"):
 
     monkeypatch.setattr(recorder, "record_mp4", record_mp4)
     monkeypatch.setattr(recorder, "extract_frame", extract_frame)
+    monkeypatch.setattr(recorder, "finish_clip", finish_clip)
     return Recorder(settings, watcher, on_event=on_event), received, calls
 
 
@@ -147,8 +151,7 @@ def test_record_mp4_saves_go2rtc_stream(tmp_path):
 
     assert run_go2rtc(handler, scenario) == 50_000
     assert (tmp_path / "a/b.mp4").stat().st_size == 50_000
-    assert seen == {"src": "garden", "duration": str(15 + recorder.LIVEVIEW_STARTUP),
-                    "auth": basic_auth("admin", "pw")}
+    assert seen == {"src": "garden", "duration": "15", "auth": basic_auth("admin", "pw")}
 
 
 def test_record_mp4_rejects_errors_and_empty_streams(tmp_path):
@@ -186,3 +189,28 @@ def test_extract_frame(tmp_path, monkeypatch):
     assert asyncio.run(recorder.extract_frame(video, tmp_path / "a.jpg")) == b"JPEG"
     assert (tmp_path / "a.jpg").read_bytes() == b"JPEG"
     assert sorted(p.name for p in tmp_path.iterdir()) == ["a.jpg", "clip.mp4", "ffmpeg"]
+
+
+def test_finish_clip_drops_audio_in_place(tmp_path, monkeypatch):
+    video = tmp_path / "clip.mp4"
+    video.write_bytes(b"with audio")
+    args_file = tmp_path / "args"
+    fake = tmp_path / "ffmpeg"
+    fake.write_text(
+        '#!/bin/sh\n'
+        f'echo "$@" > {args_file}\n'
+        'for a; do out="$a"; done\n'
+        'printf "video only" > "$out"\n'
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+    monkeypatch.setattr(recorder.shutil, "which", lambda name: str(fake))
+
+    asyncio.run(recorder.finish_clip(video))
+    assert video.read_bytes() == b"video only"
+    assert "-map 0:v -c copy -movflags +faststart" in args_file.read_text()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["args", "clip.mp4", "ffmpeg"]
+
+    # Without ffmpeg the clip is left as it is.
+    monkeypatch.setattr(recorder.shutil, "which", lambda name: None)
+    asyncio.run(recorder.finish_clip(video))
+    assert video.read_bytes() == b"video only"
